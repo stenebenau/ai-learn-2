@@ -1,148 +1,159 @@
-# src/sft_train.py
-import sys
-from importlib.metadata import PackageNotFoundError, version
-from packaging.version import parse
+'''
+This script performs Supervised Fine-Tuning (SFT) on a causal language model
+using the TRL library, QLoRA for parameter-efficient fine-tuning, and BitsAndBytes
+for 4-bit quantization.
 
-# --- Environment Check for transformers version ---
-# This script requires a recent version of the 'transformers' library.
-# This check ensures the environment is set up correctly.
-try:
-    required_version = "4.44.0"
-    installed_version = version("transformers")
-    if parse(installed_version) < parse(required_version):
-        sys.stderr.write(
-            f"ERROR: Your 'transformers' version is {installed_version}, but version >= {required_version} is required.\n"
-            "This can lead to import errors like 'cannot import name LossKwargs'.\n\n"
-            "Please update your environment by activating it and running 'make setup':\n"
-            "  conda activate crm-dedup-llm\n"
-            "  make setup\n"
-        )
-        sys.exit(1)
-except PackageNotFoundError:
-    sys.stderr.write(
-        "ERROR: The 'transformers' library is not installed.\n\n"
-        "Please set up your environment by activating it and running 'make setup':\n"
-        "  conda activate crm-dedup-llm\n"
-        "  make setup\n"
-    )
-    sys.exit(1)
+It is designed to be run from the command line and configured via a YAML file.
 
-
-# --- Troubleshooting Note for Stale Caches ---
-# If you have updated 'transformers' and still see an ImportError related to
-# model code (e.g., "cannot import name 'LossKwargs' from .../.cache/huggingface/..."),
-# your Hugging Face cache for the model is likely stale.
-#
-# To fix this, run the following command from your project root:
-#   make clean-cache
-#
-# This will remove the cached model-specific Python files and force a fresh download.
-
+Usage:
+    accelerate launch src/sft_train.py --config configs/your_config.yaml
+'''
 
 import argparse
 import logging
-import os
+import sys
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 import torch
 import yaml
 from datasets import load_dataset
+from packaging.version import parse
 from peft import LoraConfig, prepare_model_for_kbit_training
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     BitsAndBytesConfig,
     TrainingArguments,
-    pipeline,
 )
 from trl import SFTTrainer
 
-# Configure logging
+# --- Basic Configuration ---
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
 )
 
 
+# --- Environment Sanity Check ---
+def check_environment():
+    """
+    Checks if the installed 'transformers' library meets the minimum version requirement.
+    This helps prevent common errors related to outdated library APIs.
+    """
+    try:
+        required_version = "4.44.0"
+        installed_version_str = version("transformers")
+        installed_version = parse(installed_version_str)
+
+        if installed_version < parse(required_version):
+            logging.error(
+                f"Your 'transformers' version is {installed_version_str}, but this script "
+                f"requires version >= {required_version}. Please upgrade your library."
+            )
+            sys.exit(1)
+        logging.info(f"Transformers version {installed_version_str} meets requirements.")
+
+    except PackageNotFoundError:
+        logging.error(
+            "The 'transformers' library is not installed. Please set up your environment."
+        )
+        sys.exit(1)
+
+
+# --- Core Functions ---
 def load_config(config_path: str) -> dict:
     """Loads the YAML configuration file."""
+    logging.info(f"Loading configuration from: {config_path}")
     with open(config_path, "r") as file:
-        return yaml.safe_load(file)
+        config = yaml.safe_load(file)
+    return config
 
 
 def main(config_path: str):
-    """Main function to run the SFT training process."""
-    logging.info(f"Loading configuration from {config_path}")
+    """
+    Main function to orchestrate the SFT training process.
+    """
+    check_environment()
     config = load_config(config_path)
-
-    peft_config = config["peft"]
-    train_config = config["train"]
+    model_config = config.get("model", {})
+    peft_config = config.get("peft", {})
+    train_config = config.get("train", {})
 
     # --- 1. Load Model and Tokenizer ---
-    logging.info(f"Loading base model: {config['model_id']}")
+    model_id = model_config.get("id")
+    logging.info(f"Loading base model: {model_id}")
 
-    # QLoRA configuration
+    # Configure 4-bit quantization (QLoRA)
     quantization_config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.bfloat16 if train_config["bf16"] else torch.float16,
+        bnb_4bit_compute_dtype=torch.bfloat16 if train_config.get("bf16") else torch.float16,
         bnb_4bit_use_double_quant=True,
     )
 
-    # Load model with quantization
+    # Load the model with quantization and map it to the current CUDA device
     model = AutoModelForCausalLM.from_pretrained(
-        config["model_id"],
+        model_id,
         quantization_config=quantization_config,
-        device_map={"": torch.cuda.current_device()},
-        trust_remote_code=True, # Required for some models like Qwen
+        device_map="auto",  # Automatically map to available GPUs
+        trust_remote_code=True, # Essential for models like Phi or Qwen
     )
-    model.config.use_cache = False # Recommended for training
+    # Disable cache for training, as it's only useful for inference
+    model.config.use_cache = False
+    model.config.pretraining_tp = 1 # Fix for some models that have a parallel pre-training setup
 
-    # Load tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(config["model_id"], trust_remote_code=True)
+    # Load the tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-        logging.info("Tokenizer `pad_token` set to `eos_token`")
+        logging.info("Tokenizer `pad_token` was not set. Setting it to `eos_token`.")
 
     # --- 2. Prepare Datasets ---
     data_dir = Path("data/processed")
     train_dataset = load_dataset("json", data_files=str(data_dir / "train.jsonl"), split="train")
     val_dataset = load_dataset("json", data_files=str(data_dir / "val.jsonl"), split="train")
-    logging.info(f"Loaded {len(train_dataset)} training examples and {len(val_dataset)} validation examples.")
+    logging.info(f"Loaded {len(train_dataset)} training and {len(val_dataset)} validation examples.")
 
     # --- 3. Configure PEFT (LoRA) ---
     lora_config = LoraConfig(
-        r=peft_config["r"],
-        lora_alpha=peft_config["alpha"],
-        lora_dropout=peft_config["dropout"],
-        target_modules=peft_config["target_modules"],
+        r=peft_config.get("r", 16),
+        lora_alpha=peft_config.get("alpha", 32),
+        lora_dropout=peft_config.get("dropout", 0.05),
+        target_modules=peft_config.get("target_modules"),
         bias="none",
         task_type="CAUSAL_LM",
     )
     
-    # Prepare model for k-bit training
-    model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=train_config["gradient_ckpt"])
+    # Prepare the model for k-bit training, which freezes base layers and adds LoRA adapters
+    model = prepare_model_for_kbit_training(
+        model, use_gradient_checkpointing=train_config.get("gradient_ckpt", True)
+    )
 
     # --- 4. Set up Training Arguments ---
     output_dir_base = Path("outputs")
-    model_name = Path(config_path).stem
-    output_dir = output_dir_base / f"{model_name}-lora-adapters"
-    
-    training_args = TrainingArguments(
+    run_name = Path(config_path).stem
+    output_dir = output_dir_base / f"{run_name}-lora-adapters"
+
+    training_arguments = TrainingArguments(
         output_dir=str(output_dir),
-        per_device_train_batch_size=train_config["batch_size"],
-        gradient_accumulation_steps=train_config["grad_accum"],
-        learning_rate=train_config["lr"],
-        num_train_epochs=train_config["epochs"],
+        per_device_train_batch_size=train_config.get("batch_size", 4),
+        gradient_accumulation_steps=train_config.get("grad_accum", 2),
+        learning_rate=train_config.get("lr", 2e-4),
+        num_train_epochs=train_config.get("epochs", 3),
         lr_scheduler_type="cosine",
         warmup_ratio=0.03,
         logging_steps=5,
         save_strategy="epoch",
-        evaluation_strategy="epoch",
-        bf16=train_config["bf16"],
-        fp16=not train_config["bf16"],
-        gradient_checkpointing=train_config["gradient_ckpt"],
-        report_to="none", # can be changed to "tensorboard" or "wandb"
-        load_best_model_at_end=True,
+        evaluation_strategy="epoch", # Evaluate at the end of each epoch
+        bf16=train_config.get("bf16", False),
+        fp16=not train_config.get("bf16", False),
+        gradient_checkpointing=train_config.get("gradient_ckpt", True),
+        report_to="none", # Can be "tensorboard" or "wandb"
+        load_best_model_at_end=True, # Requires evaluation_strategy and save_strategy to be the same
+        metric_for_best_model="loss",
+        greater_is_better=False,
     )
 
     # --- 5. Initialize SFTTrainer ---
@@ -152,46 +163,51 @@ def main(config_path: str):
         train_dataset=train_dataset,
         eval_dataset=val_dataset,
         peft_config=lora_config,
-        dataset_text_field="messages", # SFTTrainer will format our 'messages' column
-        max_seq_length=train_config["max_seq_len"],
-        args=training_args,
+        dataset_text_field="messages", # The column in your dataset that SFTTrainer should format
+        max_seq_length=train_config.get("max_seq_len", 512),
+        args=training_arguments,
         packing=True, # Pack multiple short examples into one sequence for efficiency
     )
 
     # --- 6. Train ---
-    logging.info("Starting SFT training...")
+    logging.info("Starting Supervised Fine-Tuning...")
     trainer.train()
     logging.info("Training complete.")
 
     # --- 7. Merge and Save Final Model ---
+    # This step creates a new, standalone model by merging the LoRA adapters
+    # with the original base model.
     logging.info("Merging LoRA adapters and saving the final model...")
     
-    # It's recommended to unload the adapter before merging
+    # Free up memory by deleting the trainer and model
+    del trainer
     del model
     torch.cuda.empty_cache()
 
-    # Reload base model in fp16/bf16 and merge
-    merged_model = AutoModelForCausalLM.from_pretrained(
-        config["model_id"],
-        torch_dtype=torch.bfloat16 if train_config["bf16"] else torch.float16,
-        low_cpu_mem_usage=True,
+    # Reload the base model in full precision (or bf16) to merge
+    base_model = AutoModelForCausalLM.from_pretrained(
+        model_id,
+        torch_dtype=torch.bfloat16 if train_config.get("bf16") else torch.float16,
+        device_map="auto",
         trust_remote_code=True,
     )
-    # Load the LoRA adapter
-    merged_model.load_adapter(str(output_dir))
-    # Merge the adapter into the base model
+    
+    # Load the LoRA adapter and merge
+    from peft import PeftModel
+    merged_model = PeftModel.from_pretrained(base_model, str(output_dir))
     merged_model = merged_model.merge_and_unload()
 
-    merged_model_path = output_dir_base / f"{model_name}-merged"
+    # Save the merged model and tokenizer
+    merged_model_path = output_dir_base / f"{run_name}-merged"
     merged_model.save_pretrained(str(merged_model_path))
     tokenizer.save_pretrained(str(merged_model_path))
 
-    logging.info(f"Merged model saved to {merged_model_path}")
-    logging.info("Script finished successfully.")
+    logging.info(f"Merged model saved successfully to: {merged_model_path}")
+    logging.info("Script finished.")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Fine-tune a model using SFT and LoRA.")
+    parser = argparse.ArgumentParser(description="Fine-tune a language model using SFT and LoRA.")
     parser.add_argument(
         "--config",
         type=str,
