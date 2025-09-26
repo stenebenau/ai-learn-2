@@ -28,7 +28,7 @@ logging.basicConfig(
 )
 
 # --- NEW: Data Formatting Function ---
-def format_dataset(example):
+def formatting_func(example):
     """
     Takes a raw data example from the JSONL file and transforms it into the
     chat format that the SFTTrainer expects.
@@ -39,6 +39,9 @@ def format_dataset(example):
         **Record 1:**
         ```json
         {json.dumps(input_records['record1'], indent=2)}
+        ```
+        **Record 2:**
+        ```json
         {json.dumps(input_records['record2'], indent=2)}
         ```
         Given these two records, determine if they are duplicates and provide your reasoning in JSON format."""
@@ -98,14 +101,11 @@ def main(config_path: str):
     # --- 2. Prepare Datasets ---
     data_dir = Path("data/processed")
 
-    # Load the raw JSONL data
-    raw_train_dataset = load_dataset("json", data_files=str(data_dir / "train.jsonl"), split="train")
-    raw_val_dataset = load_dataset("json", data_files=str(data_dir / "val.jsonl"), split="train")
-
-    # Apply the formatting function to transform the datasets
-    logging.info("Formatting datasets into chat format...")
-    train_dataset = raw_train_dataset.map(format_dataset, remove_columns=raw_train_dataset.column_names)
-    val_dataset = raw_val_dataset.map(format_dataset, remove_columns=raw_val_dataset.column_names)
+    # --- 2. Load Datasets (NO MANUAL MAPPING) ---
+    data_dir = Path("data/processed")
+    train_dataset = load_dataset("json", data_files=str(data_dir / "train.jsonl"), split="train")
+    val_dataset = load_dataset("json", data_files=str(data_dir / "val.jsonl"), split="train")
+    logging.info(f"Loaded {len(train_dataset)} training and {len(val_dataset)} validation examples.")
     
     logging.info(f"Loaded and formatted {len(train_dataset)} training and {len(val_dataset)} validation examples.")
 
@@ -160,6 +160,8 @@ def main(config_path: str):
         peft_config=lora_config,
         # Pass the single, unified config object to the 'args' parameter
         args=sft_config,
+        # Provide the formatting function directly to the trainer
+        formatting_func=formatting_func,
     )
 
     # --- 6. Train ---
