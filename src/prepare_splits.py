@@ -1,7 +1,7 @@
 import argparse
 import json
 from pathlib import Path
-from datasets import Dataset, load_dataset
+from datasets import Dataset, load_dataset, ClassLabel
 
 def create_dummy_splits(output_dir: Path, input_file_name: str):
     """Creates dummy data files if the source file is missing."""
@@ -78,6 +78,10 @@ def prepare_splits(input_file: Path, output_dir: Path):
         return {"label": example["output"]["result"]}
 
     dataset = dataset.map(get_label, num_proc=4)
+
+    # Cast the 'label' column to ClassLabel for stratification
+    print("Casting label column for stratification...")
+    dataset = dataset.cast_column("label", ClassLabel(names=dataset.unique("label")))
 
     print("Performing stratified split (80/10/10)...")
     # Split into 80% train and 20% temp
