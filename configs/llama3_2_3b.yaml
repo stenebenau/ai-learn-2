@@ -1,4 +1,5 @@
-model_id: meta-llama/Llama-3.2-3B-Instruct
+model:
+  id: meta-llama/Llama-3.2-3B-Instruct
 peft:
   method: qlora
   r: 64

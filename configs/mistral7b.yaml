@@ -1,4 +1,5 @@
-model_id: mistralai/Mistral-7B-Instruct-v0.3
+model:
+  id: mistralai/Mistral-7B-Instruct-v0.3
 peft:
   method: qlora
   r: 64

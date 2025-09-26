@@ -1,4 +1,5 @@
-model_id: microsoft/Phi-4-mini-instruct
+model:
+  id: microsoft/Phi-4-mini-instruct
 peft:
   method: qlora
   r: 64
