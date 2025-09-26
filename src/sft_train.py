@@ -1,29 +1,22 @@
 '''
 This script performs Supervised Fine-Tuning (SFT) on a causal language model
-using the TRL library, QLoRA for parameter-efficient fine-tuning, and BitsAndBytes
-for 4-bit quantization.
-
-This version is updated to use the modern APIs for both transformers and TRL.
+using the modern APIs for the TRL and Transformers libraries.
 '''
 
 import argparse
 import logging
-import sys
-from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 import torch
 import yaml
 from datasets import load_dataset
-from packaging.version import parse
 from peft import LoraConfig, prepare_model_for_kbit_training
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     BitsAndBytesConfig,
-    TrainingArguments,
 )
-# IMPORTANT: Import the new SFTConfig object
+# Use the new, unified SFTConfig from TRL
 from trl import SFTConfig, SFTTrainer
 
 # --- Basic Configuration ---
@@ -38,8 +31,7 @@ def load_config(config_path: str) -> dict:
     """Loads the YAML configuration file."""
     logging.info(f"Loading configuration from: {config_path}")
     with open(config_path, "r") as file:
-        config = yaml.safe_load(file)
-    return config
+        return yaml.safe_load(file)
 
 
 def main(config_path: str):
@@ -92,16 +84,19 @@ def main(config_path: str):
         task_type="CAUSAL_LM",
     )
     
-    model = prepare_model_for_kbit_training(
-        model, use_gradient_checkpointing=train_config.get("gradient_ckpt", True)
-    )
-
-    # --- 4. Set up Training Arguments ---
+    # --- 4. Set up Unified SFT Configuration ---
     output_dir_base = Path("outputs")
     run_name = Path(config_path).stem
     output_dir = output_dir_base / f"{run_name}-lora-adapters"
 
-    training_arguments = TrainingArguments(
+    # Use SFTConfig to hold ALL arguments. This replaces TrainingArguments.
+    sft_config = SFTConfig(
+        # SFT-specific arguments
+        dataset_text_field="messages",
+        max_seq_length=train_config.get("max_seq_len", 512),
+        packing=True,
+        
+        # Training arguments
         output_dir=str(output_dir),
         per_device_train_batch_size=train_config.get("batch_size", 4),
         gradient_accumulation_steps=train_config.get("grad_accum", 2),
@@ -111,7 +106,6 @@ def main(config_path: str):
         warmup_ratio=0.03,
         logging_steps=5,
         save_strategy="epoch",
-        # Use the new, correct argument name for the evaluation strategy
         eval_strategy="epoch",
         bf16=train_config.get("bf16", False),
         fp16=not train_config.get("bf16", False),
@@ -122,53 +116,27 @@ def main(config_path: str):
         greater_is_better=False,
     )
 
-    # --- 5. Initialize SFTTrainer (with the new SFTConfig) ---
-    
-    # Create the new SFTConfig object to hold SFT-specific parameters
-    sft_config = SFTConfig(
-        dataset_text_field="messages",
-        max_seq_length=train_config.get("max_seq_len", 512),
-        packing=True,
-    )
-
+    # --- 5. Initialize SFTTrainer ---
     trainer = SFTTrainer(
         model=model,
         tokenizer=tokenizer,
         train_dataset=train_dataset,
         eval_dataset=val_dataset,
         peft_config=lora_config,
-        args=training_arguments,
-        # Pass the new config object here
-        sft_config=sft_config,
+        # Pass the single, unified config object to the 'args' parameter
+        args=sft_config,
     )
 
     # --- 6. Train ---
-    logging.info("Starting Supervised Fine-Tuning...")
+    logging.info("Starting Supervised Fine-Tuning with modern TRL API...")
     trainer.train()
     logging.info("Training complete.")
 
     # --- 7. Merge and Save Final Model ---
-    logging.info("Merging LoRA adapters and saving the final model...")
-    
-    del trainer
-    del model
-    torch.cuda.empty_cache()
-
-    base_model = AutoModelForCausalLM.from_pretrained(
-        model_id,
-        torch_dtype=torch.bfloat16 if train_config.get("bf16") else torch.float16,
-        device_map="auto",
-        trust_remote_code=True,
-    )
-    
-    from peft import PeftModel
-    merged_model = PeftModel.from_pretrained(base_model, str(output_dir))
-    merged_model = merged_model.merge_and_unload()
-
+    logging.info("Saving the final merged model...")
     merged_model_path = output_dir_base / f"{run_name}-merged"
-    merged_model.save_pretrained(str(merged_model_path))
+    trainer.save_model(str(merged_model_path))
     tokenizer.save_pretrained(str(merged_model_path))
-
     logging.info(f"Merged model saved successfully to: {merged_model_path}")
     logging.info("Script finished.")
 
