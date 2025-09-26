@@ -28,6 +28,17 @@ def create_dummy_splits(output_dir: Path, input_file_name: str):
     print(f"Dummy splits created in {output_dir}. Totals: 24 train, 3 val, 3 test.")
     print(f"To use real data, place your dataset at '{input_file_name}' and re-run 'make prep'.")
 
+def stringify_record_values(d: dict) -> dict:
+    """Recursively converts all values in a dictionary to strings."""
+    if not isinstance(d, dict):
+        return d
+    for k, v in d.items():
+        if isinstance(v, dict):
+            d[k] = stringify_record_values(v)
+        elif v is not None:
+            d[k] = str(v)
+    return d
+
 def prepare_splits(input_file: Path, output_dir: Path):
     """
     Loads a JSONL dataset, performs a stratified 80/10/10 split,
@@ -45,6 +56,19 @@ def prepare_splits(input_file: Path, output_dir: Path):
         for line in f:
             if line.strip():
                 records.append(json.loads(line))
+
+    # Normalize all values in input records to strings to prevent type errors
+    print("Normalizing data types by converting all input record values to strings...")
+    for record in records:
+        try:
+            if "input" in record and isinstance(record["input"], dict):
+                if "record1" in record["input"]:
+                    record["input"]["record1"] = stringify_record_values(record["input"]["record1"])
+                if "record2" in record["input"]:
+                    record["input"]["record2"] = stringify_record_values(record["input"]["record2"])
+        except (KeyError, TypeError):
+            # This will gracefully handle malformed records if any
+            pass
 
     # Create a Dataset object from the list of dictionaries
     dataset = Dataset.from_list(records)
