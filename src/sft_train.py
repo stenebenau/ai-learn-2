@@ -52,10 +52,10 @@ from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     BitsAndBytesConfig,
-    TrainingArguments,
+    ,
     pipeline,
 )
-from trl import SFTTrainer
+from trl import SFTTrainer, TrainingArguments
 
 # Configure logging
 logging.basicConfig(
