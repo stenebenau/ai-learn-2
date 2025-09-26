@@ -3,10 +3,7 @@ This script performs Supervised Fine-Tuning (SFT) on a causal language model
 using the TRL library, QLoRA for parameter-efficient fine-tuning, and BitsAndBytes
 for 4-bit quantization.
 
-It is designed to be run from the command line and configured via a YAML file.
-
-Usage:
-    accelerate launch src/sft_train.py --config configs/your_config.yaml
+This version is updated to use the modern APIs for both transformers and TRL.
 '''
 
 import argparse
@@ -26,7 +23,8 @@ from transformers import (
     BitsAndBytesConfig,
     TrainingArguments,
 )
-from trl import SFTTrainer
+# IMPORTANT: Import the new SFTConfig object
+from trl import SFTConfig, SFTTrainer
 
 # --- Basic Configuration ---
 logging.basicConfig(
@@ -36,33 +34,6 @@ logging.basicConfig(
 )
 
 
-# --- Environment Sanity Check ---
-def check_environment():
-    """
-    Checks if the installed 'transformers' library meets the minimum version requirement.
-    This helps prevent common errors related to outdated library APIs.
-    """
-    try:
-        required_version = "4.44.0"
-        installed_version_str = version("transformers")
-        installed_version = parse(installed_version_str)
-
-        if installed_version < parse(required_version):
-            logging.error(
-                f"Your 'transformers' version is {installed_version_str}, but this script "
-                f"requires version >= {required_version}. Please upgrade your library."
-            )
-            sys.exit(1)
-        logging.info(f"Transformers version {installed_version_str} meets requirements.")
-
-    except PackageNotFoundError:
-        logging.error(
-            "The 'transformers' library is not installed. Please set up your environment."
-        )
-        sys.exit(1)
-
-
-# --- Core Functions ---
 def load_config(config_path: str) -> dict:
     """Loads the YAML configuration file."""
     logging.info(f"Loading configuration from: {config_path}")
@@ -75,7 +46,6 @@ def main(config_path: str):
     """
     Main function to orchestrate the SFT training process.
     """
-    check_environment()
     config = load_config(config_path)
     model_config = config.get("model", {})
     peft_config = config.get("peft", {})
@@ -85,7 +55,6 @@ def main(config_path: str):
     model_id = model_config.get("id")
     logging.info(f"Loading base model: {model_id}")
 
-    # Configure 4-bit quantization (QLoRA)
     quantization_config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_quant_type="nf4",
@@ -93,18 +62,15 @@ def main(config_path: str):
         bnb_4bit_use_double_quant=True,
     )
 
-    # Load the model with quantization and map it to the current CUDA device
     model = AutoModelForCausalLM.from_pretrained(
         model_id,
         quantization_config=quantization_config,
-        device_map="auto",  # Automatically map to available GPUs
-        trust_remote_code=True, # Essential for models like Phi or Qwen
+        device_map="auto",
+        trust_remote_code=True,
     )
-    # Disable cache for training, as it's only useful for inference
     model.config.use_cache = False
-    model.config.pretraining_tp = 1 # Fix for some models that have a parallel pre-training setup
+    model.config.pretraining_tp = 1
 
-    # Load the tokenizer
     tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -126,7 +92,6 @@ def main(config_path: str):
         task_type="CAUSAL_LM",
     )
     
-    # Prepare the model for k-bit training, which freezes base layers and adds LoRA adapters
     model = prepare_model_for_kbit_training(
         model, use_gradient_checkpointing=train_config.get("gradient_ckpt", True)
     )
@@ -146,27 +111,35 @@ def main(config_path: str):
         warmup_ratio=0.03,
         logging_steps=5,
         save_strategy="epoch",
-        eval_strategy="epoch", # Evaluate at the end of each epoch
+        # Use the new, correct argument name for the evaluation strategy
+        eval_strategy="epoch",
         bf16=train_config.get("bf16", False),
         fp16=not train_config.get("bf16", False),
         gradient_checkpointing=train_config.get("gradient_ckpt", True),
-        report_to="none", # Can be "tensorboard" or "wandb"
-        load_best_model_at_end=True, # Requires evaluation_strategy and save_strategy to be the same
+        report_to="none",
+        load_best_model_at_end=True,
         metric_for_best_model="loss",
         greater_is_better=False,
     )
 
-    # --- 5. Initialize SFTTrainer ---
+    # --- 5. Initialize SFTTrainer (with the new SFTConfig) ---
+    
+    # Create the new SFTConfig object to hold SFT-specific parameters
+    sft_config = SFTConfig(
+        dataset_text_field="messages",
+        max_seq_length=train_config.get("max_seq_len", 512),
+        packing=True,
+    )
+
     trainer = SFTTrainer(
         model=model,
         tokenizer=tokenizer,
         train_dataset=train_dataset,
         eval_dataset=val_dataset,
         peft_config=lora_config,
-        dataset_text_field="messages", # The column in your dataset that SFTTrainer should format
-        max_seq_length=train_config.get("max_seq_len", 512),
         args=training_arguments,
-        packing=True, # Pack multiple short examples into one sequence for efficiency
+        # Pass the new config object here
+        sft_config=sft_config,
     )
 
     # --- 6. Train ---
@@ -175,16 +148,12 @@ def main(config_path: str):
     logging.info("Training complete.")
 
     # --- 7. Merge and Save Final Model ---
-    # This step creates a new, standalone model by merging the LoRA adapters
-    # with the original base model.
     logging.info("Merging LoRA adapters and saving the final model...")
     
-    # Free up memory by deleting the trainer and model
     del trainer
     del model
     torch.cuda.empty_cache()
 
-    # Reload the base model in full precision (or bf16) to merge
     base_model = AutoModelForCausalLM.from_pretrained(
         model_id,
         torch_dtype=torch.bfloat16 if train_config.get("bf16") else torch.float16,
@@ -192,12 +161,10 @@ def main(config_path: str):
         trust_remote_code=True,
     )
     
-    # Load the LoRA adapter and merge
     from peft import PeftModel
     merged_model = PeftModel.from_pretrained(base_model, str(output_dir))
     merged_model = merged_model.merge_and_unload()
 
-    # Save the merged model and tokenizer
     merged_model_path = output_dir_base / f"{run_name}-merged"
     merged_model.save_pretrained(str(merged_model_path))
     tokenizer.save_pretrained(str(merged_model_path))
