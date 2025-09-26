@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Environment
+.env
+.venv
+env/
+venv/
+/env.yml
+
+# Data - Source data and generated splits should not be in git
+#/data/all.jsonl
+/data/train.jsonl
+/data/val.jsonl
+/data/test.jsonl
+
+# Outputs & Reports
+/outputs/
+/reports/
+
+# IDE & OS
+.vscode/
+.idea/
+*.DS_Store

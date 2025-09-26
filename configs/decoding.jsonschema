@@ -1,0 +1,9 @@
+{
+  "type": "object",
+  "properties": {
+    "result": { "enum": ["DUPLICATE", "POSSIBLE", "NO_MATCH"] },
+    "reasoning": { "type": "string", "minLength": 1, "maxLength": 320 }
+  },
+  "required": ["result", "reasoning"],
+  "additionalProperties": false
+}
