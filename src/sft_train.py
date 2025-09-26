@@ -101,7 +101,7 @@ def main(config_path: str):
     # --- 2. Load Datasets (NO MANUAL MAPPING) ---
     data_dir = Path("data/processed")
     train_dataset = load_dataset("json", data_files=str(data_dir / "train.jsonl"), split="train")
-    val_dataset = load_dataset("json", data_files=str(data_dir / "val.jsonl"), split="train")
+    val_dataset = load_dataset("json", data_files=str(data_dir / "val.jsonl"), split="validation")
     logging.info(val_dataset)
     logging.info(f"Loaded {len(train_dataset)} training and {len(val_dataset)} validation examples.")
     
@@ -157,9 +157,7 @@ def main(config_path: str):
         eval_dataset=val_dataset,
         peft_config=lora_config,
         # Pass the single, unified config object to the 'args' parameter
-        args=sft_config,
-        # Provide the formatting function directly to the trainer
-        formatting_func=formatting_func,
+        args=sft_config
     )
 
     # --- 6. Train ---
