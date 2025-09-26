@@ -125,7 +125,7 @@ def main(config_path: str):
     # Use SFTConfig to hold ALL arguments. This replaces TrainingArguments.
     sft_config = SFTConfig(
         # SFT-specific arguments
-        dataset_text_field="messages",
+        dataset_text_field="text",
         max_seq_length=train_config.get("max_seq_len", 512),
         packing=True,
         
