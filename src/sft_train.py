@@ -137,7 +137,6 @@ def main(config_path: str):
         warmup_ratio=0.03,
         logging_steps=5,
         save_strategy="epoch",
-        evaluation_strategy="epoch",
         bf16=train_config["bf16"],
         fp16=not train_config["bf16"],
         gradient_checkpointing=train_config["gradient_ckpt"],
