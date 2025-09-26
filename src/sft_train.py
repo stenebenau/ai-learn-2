@@ -4,6 +4,7 @@ using the modern APIs for the TRL and Transformers libraries.
 '''
 
 import argparse
+import json
 import logging
 from pathlib import Path
 
@@ -26,6 +27,32 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 
+# --- NEW: Data Formatting Function ---
+def format_dataset(example):
+    """
+    Takes a raw data example from the JSONL file and transforms it into the
+    chat format that the SFTTrainer expects.
+    """
+    # Serialize the input records into a formatted string for the 'user' turn
+    input_records = example['input']
+    user_prompt = f"""### Input
+        **Record 1:**
+        ```json
+        {json.dumps(input_records['record1'], indent=2)}
+        {json.dumps(input_records['record2'], indent=2)}
+        ```
+        Given these two records, determine if they are duplicates and provide your reasoning in JSON format."""
+    
+    # Serialize the output into a string for the 'assistant' turn
+    assistant_response = f"""### Output
+                {json.dumps(example['output'], indent=2)}
+        """
+    # Create the 'messages' list in the required conversational format
+    messages = [
+        {"role": "user", "content": user_prompt},
+        {"role": "assistant", "content": assistant_response},
+    ]
+    return {"messages": messages}
 
 def load_config(config_path: str) -> dict:
     """Loads the YAML configuration file."""
@@ -70,9 +97,17 @@ def main(config_path: str):
 
     # --- 2. Prepare Datasets ---
     data_dir = Path("data/processed")
-    train_dataset = load_dataset("json", data_files=str(data_dir / "train.jsonl"), split="train")
-    val_dataset = load_dataset("json", data_files=str(data_dir / "val.jsonl"), split="train")
-    logging.info(f"Loaded {len(train_dataset)} training and {len(val_dataset)} validation examples.")
+
+    # Load the raw JSONL data
+    raw_train_dataset = load_dataset("json", data_files=str(data_dir / "train.jsonl"), split="train")
+    raw_val_dataset = load_dataset("json", data_files=str(data_dir / "val.jsonl"), split="train")
+
+    # Apply the formatting function to transform the datasets
+    logging.info("Formatting datasets into chat format...")
+    train_dataset = raw_train_dataset.map(format_dataset, remove_columns=raw_train_dataset.column_names)
+    val_dataset = raw_val_dataset.map(format_dataset, remove_columns=raw_val_dataset.column_names)
+    
+    logging.info(f"Loaded and formatted {len(train_dataset)} training and {len(val_dataset)} validation examples.")
 
     # --- 3. Configure PEFT (LoRA) ---
     lora_config = LoraConfig(
