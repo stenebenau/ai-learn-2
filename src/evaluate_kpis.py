@@ -90,7 +90,7 @@ class TransformersBackend(GenerationBackend):
     def __init__(self, model_path: str, schema: dict, gen_kwargs: dict):
         super().__init__(model_path, schema, gen_kwargs)
         try:
-            import outlines
+            from outlines.integrations import JSONLogitsProcessor
             from transformers import AutoModelForCausalLM, AutoTokenizer
         except ImportError:
             raise ImportError("Outlines is not installed. Please run 'pip install outlines'.")
@@ -99,15 +99,13 @@ class TransformersBackend(GenerationBackend):
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
-        model = AutoModelForCausalLM.from_pretrained(
+        self.model = AutoModelForCausalLM.from_pretrained(
             model_path,
             torch_dtype=torch.bfloat16,
             device_map="auto",
             trust_remote_code=True,
         )
-        self.generator = outlines.generate.json(
-            model, schema, max_tokens=gen_kwargs["max_new_tokens"], tokenizer=self.tokenizer
-        )
+        self.logits_processor = JSONLogitsProcessor(schema, self.tokenizer)
 
     def generate(self, prompts: list[list[dict]]) -> list[str]:
         outputs = []
@@ -115,10 +113,21 @@ class TransformersBackend(GenerationBackend):
             prompt_str = self.tokenizer.apply_chat_template(
                 conv, tokenize=False, add_generation_prompt=True
             )
-            # Note: Outlines generator doesn't directly use temp/top_p in the same way.
-            # It uses constrained sampling.
-            generated = self.generator(prompt_str)
-            outputs.append(generated)
+            inputs = self.tokenizer(prompt_str, return_tensors="pt").to(self.model.device)
+
+            generated_ids = self.model.generate(
+                **inputs,
+                logits_processor=[self.logits_processor],
+                max_new_tokens=self.gen_kwargs["max_new_tokens"],
+                temperature=self.gen_kwargs["temperature"],
+                top_p=self.gen_kwargs["top_p"],
+                pad_token_id=self.tokenizer.eos_token_id,
+            )
+
+            # Decode only the newly generated tokens
+            output_ids = generated_ids[0, inputs["input_ids"].shape[1]:]
+            generated_text = self.tokenizer.decode(output_ids, skip_special_tokens=True)
+            outputs.append(generated_text)
         return outputs
 
 

@@ -134,8 +134,8 @@ class TransformersBenchmarkBackend(BenchmarkBackend):
     """Single-process benchmark using Transformers and Outlines for baseline latency."""
 
     def __init__(self, model_path: str, schema: dict, gen_kwargs: dict):
-        import outlines
         import torch
+        from outlines.integrations import JSONLogitsProcessor
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
         super().__init__(model_id=model_path, schema=schema, gen_kwargs=gen_kwargs)
@@ -144,18 +144,13 @@ class TransformersBenchmarkBackend(BenchmarkBackend):
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
-        model = AutoModelForCausalLM.from_pretrained(
+        self.model = AutoModelForCausalLM.from_pretrained(
             model_path,
             torch_dtype=torch.bfloat16,
             device_map="auto",
             trust_remote_code=True,
         )
-        self.generator = outlines.generate.json(
-            model,
-            schema,
-            max_tokens=gen_kwargs["max_new_tokens"],
-            tokenizer=self.tokenizer,
-        )
+        self.logits_processor = JSONLogitsProcessor(schema, self.tokenizer)
 
     async def benchmark(self, prompts: list[list[dict]], concurrency: int) -> dict:
         if concurrency != 1:
@@ -174,13 +169,21 @@ class TransformersBenchmarkBackend(BenchmarkBackend):
             prompt_str = self.tokenizer.apply_chat_template(
                 prompt, tokenize=False, add_generation_prompt=True
             )
+            inputs = self.tokenizer(prompt_str, return_tensors="pt").to(self.model.device)
 
             start_time = time.monotonic()
-            generated_text = self.generator(prompt_str)
+            generated_ids = self.model.generate(
+                **inputs,
+                logits_processor=[self.logits_processor],
+                max_new_tokens=self.gen_kwargs["max_new_tokens"],
+                temperature=self.gen_kwargs["temperature"],
+                top_p=self.gen_kwargs["top_p"],
+                pad_token_id=self.tokenizer.eos_token_id,
+            )
             latency = time.monotonic() - start_time
 
-            output_ids = self.tokenizer(generated_text, return_tensors="pt").input_ids
-            num_output_tokens = output_ids.shape[1]
+            output_ids = generated_ids[0, inputs["input_ids"].shape[1]:]
+            num_output_tokens = len(output_ids)
 
             latencies.append(latency)
             total_output_tokens += num_output_tokens
