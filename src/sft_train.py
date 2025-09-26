@@ -146,7 +146,7 @@ def main(config_path: str):
         warmup_ratio=0.03,
         logging_steps=5,
         save_strategy="epoch",
-        evaluation_strategy="epoch", # Evaluate at the end of each epoch
+        eval_strategy="epoch", # Evaluate at the end of each epoch
         bf16=train_config.get("bf16", False),
         fp16=not train_config.get("bf16", False),
         gradient_checkpointing=train_config.get("gradient_ckpt", True),
