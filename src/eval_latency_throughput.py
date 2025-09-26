@@ -1,4 +1,32 @@
 # src/eval_latency_throughput.py
+import sys
+from importlib.metadata import PackageNotFoundError, version
+from packaging.version import parse
+
+# --- Environment Check for transformers version ---
+# This script requires a recent version of the 'transformers' library for the 'transformers' backend.
+# This check ensures the environment is set up correctly.
+try:
+    required_version = "4.44.0"
+    installed_version = version("transformers")
+    if parse(installed_version) < parse(required_version):
+        sys.stderr.write(
+            f"ERROR: Your 'transformers' version is {installed_version}, but version >= {required_version} is required.\n"
+            "This can lead to import errors when using the 'transformers' backend.\n\n"
+            "Please update your environment by activating it and running 'make setup':\n"
+            "  conda activate crm-dedup-llm\n"
+            "  make setup\n"
+        )
+        sys.exit(1)
+except PackageNotFoundError:
+    sys.stderr.write(
+        "ERROR: The 'transformers' library is not installed.\n\n"
+        "Please set up your environment by activating it and running 'make setup':\n"
+        "  conda activate crm-dedup-llm\n"
+        "  make setup\n"
+    )
+    sys.exit(1)
+
 
 import argparse
 import asyncio

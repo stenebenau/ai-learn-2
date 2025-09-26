@@ -1,4 +1,44 @@
 # src/sft_train.py
+import sys
+from importlib.metadata import PackageNotFoundError, version
+from packaging.version import parse
+
+# --- Environment Check for transformers version ---
+# This script requires a recent version of the 'transformers' library.
+# This check ensures the environment is set up correctly.
+try:
+    required_version = "4.44.0"
+    installed_version = version("transformers")
+    if parse(installed_version) < parse(required_version):
+        sys.stderr.write(
+            f"ERROR: Your 'transformers' version is {installed_version}, but version >= {required_version} is required.\n"
+            "This can lead to import errors like 'cannot import name LossKwargs'.\n\n"
+            "Please update your environment by activating it and running 'make setup':\n"
+            "  conda activate crm-dedup-llm\n"
+            "  make setup\n"
+        )
+        sys.exit(1)
+except PackageNotFoundError:
+    sys.stderr.write(
+        "ERROR: The 'transformers' library is not installed.\n\n"
+        "Please set up your environment by activating it and running 'make setup':\n"
+        "  conda activate crm-dedup-llm\n"
+        "  make setup\n"
+    )
+    sys.exit(1)
+
+
+# --- Troubleshooting Note for Stale Caches ---
+# If you have updated 'transformers' and still see an ImportError related to
+# model code (e.g., "cannot import name 'LossKwargs' from .../.cache/huggingface/..."),
+# your Hugging Face cache for the model is likely stale.
+#
+# To fix this, run the following command from your project root:
+#   make clean-cache
+#
+# This will remove the cached model-specific Python files and force a fresh download.
+
+
 import argparse
 import logging
 import os
