@@ -98,13 +98,11 @@ def main(config_path: str):
         tokenizer.pad_token = tokenizer.eos_token
         logging.info("Tokenizer `pad_token` was not set. Setting it to `eos_token`.")
 
-    # --- 2. Prepare Datasets ---
-    data_dir = Path("data/processed")
-
     # --- 2. Load Datasets (NO MANUAL MAPPING) ---
     data_dir = Path("data/processed")
     train_dataset = load_dataset("json", data_files=str(data_dir / "train.jsonl"), split="train")
     val_dataset = load_dataset("json", data_files=str(data_dir / "val.jsonl"), split="train")
+    logging.info(val_dataset)
     logging.info(f"Loaded {len(train_dataset)} training and {len(val_dataset)} validation examples.")
     
     logging.info(f"Loaded and formatted {len(train_dataset)} training and {len(val_dataset)} validation examples.")
