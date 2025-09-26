@@ -1,7 +1,7 @@
 import argparse
 import json
 from pathlib import Path
-from datasets import load_dataset
+from datasets import Dataset, load_dataset
 
 def create_dummy_splits(output_dir: Path, input_file_name: str):
     """Creates dummy data files if the source file is missing."""
@@ -38,7 +38,16 @@ def prepare_splits(input_file: Path, output_dir: Path):
         return
 
     print(f"Loading dataset from {input_file}...")
-    dataset = load_dataset("json", data_files=str(input_file), split="train")
+    
+    # Manually load JSONL to handle type inconsistencies that break pyarrow
+    records = []
+    with open(input_file, "r", encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                records.append(json.loads(line))
+
+    # Create a Dataset object from the list of dictionaries
+    dataset = Dataset.from_list(records)
 
     # Extract the label for stratification
     def get_label(example):
