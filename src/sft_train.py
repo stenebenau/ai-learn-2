@@ -100,8 +100,8 @@ def main(config_path: str):
 
     # --- 2. Load Datasets (NO MANUAL MAPPING) ---
     data_dir = Path("data/processed")
-    train_dataset = load_dataset("json", data_files=str(data_dir / "train.jsonl"), split="train")
-    val_dataset = load_dataset("json", data_files=str(data_dir / "val.jsonl"), split="train")
+    train_dataset = load_dataset("json", data_files=str(data_dir / "train_prepared..jsonl"), split="train")
+    val_dataset = load_dataset("json", data_files=str(data_dir / "val_prepared..jsonl"), split="train")
     logging.info(val_dataset)
     logging.info(f"Loaded {len(train_dataset)} training and {len(val_dataset)} validation examples.")
     
